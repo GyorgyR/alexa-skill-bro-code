@@ -6,7 +6,15 @@
 #   Date:   25/03/2017                                            #
 ###################################################################
 
-from flask import Flask
+import json
+import urllib2
+import cryptography
+from cryptography import x509
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes
+from datetime import datetime
+from flask import Flask, request
 from random import randint
 
 app = Flask(__name__) #create app instance
@@ -111,6 +119,50 @@ array = ["Article 1. Bros before hoes. Always remember, girlfriends come and go,
 
 @app.route('/',methods=['POST','GET'])
 def randomCode():
+
+    #check the timestamp
+    alexaIntent = request.data
+    alexaIntent = json.loads(alexaIntent)
+    timeString = alexaIntent['request']['timestamp']
+    requestTime = datetime.strptime(timeString,"%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now()
+    if((now-requestTime).total_seconds() > 150):
+        print 'More than 150 seconds have passed'
+        return False
+
+    #validate the url
+    header = request.headers.get('SignatureCertChainUrl')
+    url = header[8:].split('/')
+    if not (header[0:5] == 'https' or url[0] == 's3.amazonaws.com' or url[0] == 's3.amazonaws.com:403' or url[1] == 'echo.api'):
+        print 'Invalid SignatureCertChainUrl'
+        return False
+
+
+    response = urllib2.urlopen(header)
+    pem_data = response.read()
+    cert = x509.load_pem_x509_certificate(pem_data, default_backend())
+    #still need to verify that this certification is valid
+    if cert.not_valid_before > now or cert.not_valid_after < now:
+        print 'Invalid certificate, it has expired'
+        return False
+
+    if not 'echo-api.amazon.com' == cert.subject.get_attributes_for_oid(cryptography.x509.oid.NameOID.COMMON_NAME)[0].value:
+        print 'echo.api.amazon.com not in the attributes of the certification'
+        return False
+
+    pkey = cert.public_key()
+
+
+    #get the signature head and decode
+    signature = request.headers.get('Signature').decode('base64')
+    try:
+        pkey.verify(signature,request.data,padding.PKCS1v15(),hashes.SHA1())
+    except cryptography.exceptions.InvalidSignature:
+        print 'Invalid Signature'
+        return False
+
+
+    #return a random article
     randomNo = randint(0,94)
     string = array[randomNo]
     response = '''
@@ -133,5 +185,3 @@ def randomCode():
     '''
 
     return response
-            
-app.run()
